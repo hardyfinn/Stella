@@ -1,0 +1,23 @@
+{
+  "slug": "Stella",
+  "name": "Stella",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "brand": "Haer",
+  "author": "Haer",
+  "authorEmail": "",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "https://github.com/hardyfinn/Stella",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "Stella",
+      "name": "Stella",
+      "description": "Sample map player: lays a folder of one-shots out on a 2D map by how they sound (auto or fixed bright/long axes). Four voices, each with a trigger, an X/Y point with CV, a spread ring and a chance that a nearby sample plays instead. Drift and gravity make the points wander.",
+      "tags": ["Sampler", "Drum", "Random"]
+    }
+  ]
+}

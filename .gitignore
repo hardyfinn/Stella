@@ -1,0 +1,5 @@
+build/
+dist/
+*.o
+test/map_test
+res/__pycache__/
