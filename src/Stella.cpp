@@ -57,7 +57,7 @@ struct Stella : Module {
 	std::atomic<bool> abortLoad{false};
 	std::atomic<bool> loading{false};
 	std::atomic<int> loadDone{0}, loadTotal{0};
-	std::string folder;     // folder asked for (saved in the patch)
+	std::vector<std::string> folders;  // folders on the map (saved in the patch)
 	bool subfolders = true;
 	bool normalise = true;
 
@@ -110,19 +110,26 @@ struct Stella : Module {
 	}
 
 	// UI thread only
-	void loadFolder(const std::string& dir) {
-		if (dir.empty()) return;
+	// replaces the map with these folders
+	void loadFolders(const std::vector<std::string>& dirs) {
 		stopLoader();
-		folder = dir;
+		folders.clear();
+		for (const std::string& d : dirs)
+			if (!d.empty() && std::find(folders.begin(), folders.end(), d) == folders.end()) folders.push_back(d);
+		if (folders.empty()) return;
+		std::vector<std::string> dl = folders;
+		std::string label = system::getFilename(dl[0]);
+		if (dl.size() > 1) label += " +" + std::to_string(dl.size() - 1);
 		bool sub = subfolders, norm = normalise;
 		loading = true;
 		loadDone = 0;
 		loadTotal = 0;
-		loader = std::thread([this, dir, sub, norm]() {
+		loader = std::thread([this, dl, label, sub, norm]() {
 			std::vector<std::string> files;
-			scan(dir, files, sub ? 4 : 0);
+			for (const std::string& d : dl) scan(d, files, sub ? 4 : 0);
 			std::sort(files.begin(), files.end());
-			stella::Library* l = stella::loadFiles(dir, files, norm,
+			files.erase(std::unique(files.begin(), files.end()), files.end());  // nested folders
+			stella::Library* l = stella::loadFiles(label, files, norm,
 				[this](int d, int t) { loadDone = d; loadTotal = t; },
 				[this]() { return abortLoad.load(); });
 			if (abortLoad) delete l;
@@ -130,6 +137,14 @@ struct Stella : Module {
 			loading = false;
 		});
 	}
+	void loadFolder(const std::string& dir) { loadFolders({dir}); }
+	void addFolders(const std::vector<std::string>& dirs) {
+		std::vector<std::string> all = folders;
+		all.insert(all.end(), dirs.begin(), dirs.end());
+		loadFolders(all);
+	}
+	void reload() { if (!folders.empty()) loadFolders(std::vector<std::string>(folders)); }
+	std::string lastFolder() { return folders.empty() ? "" : folders.back(); }
 
 	static void scan(const std::string& dir, std::vector<std::string>& out, int depth) {
 		for (const std::string& p : system::getEntries(dir)) {
@@ -238,7 +253,9 @@ struct Stella : Module {
 
 	json_t* dataToJson() override {
 		json_t* r = json_object();
-		json_object_set_new(r, "folder", json_string(folder.c_str()));
+		json_t* fs = json_array();
+		for (const std::string& f : folders) json_array_append_new(fs, json_string(f.c_str()));
+		json_object_set_new(r, "folders", fs);
 		json_object_set_new(r, "subfolders", json_boolean(subfolders));
 		json_object_set_new(r, "normalise", json_boolean(normalise));
 		return r;
@@ -247,10 +264,14 @@ struct Stella : Module {
 	void dataFromJson(json_t* r) override {
 		if (json_t* j = json_object_get(r, "subfolders")) subfolders = json_boolean_value(j);
 		if (json_t* j = json_object_get(r, "normalise")) normalise = json_boolean_value(j);
-		if (json_t* j = json_object_get(r, "folder")) {
-			std::string f = json_string_value(j);
-			if (!f.empty()) loadFolder(f);
+		std::vector<std::string> fs;
+		if (json_t* a = json_object_get(r, "folders")) {
+			size_t i;
+			json_t* v;
+			json_array_foreach(a, i, v) if (json_string_value(v)) fs.push_back(json_string_value(v));
 		}
+		else if (json_t* j = json_object_get(r, "folder")) if (json_string_value(j)) fs.push_back(json_string_value(j));
+		if (!fs.empty()) loadFolders(fs);
 	}
 };
 
@@ -428,11 +449,11 @@ struct MapDisplay : Widget {
 			head = "analysing " + std::to_string(module->loadDone.load()) + "/" + std::to_string(module->loadTotal.load()) + "...";
 		}
 		else if (lib) {
-			head = system::getFilename(lib->folder) + " - " + std::to_string(lib->entries.size()) + " samples";
+			head = lib->folder + " - " + std::to_string(lib->entries.size()) + " samples";
 			if (!lib->note.empty()) head += " - " + lib->note;
-			if (lib->entries.empty()) head = system::getFilename(lib->folder) + " - no WAV/AIFF files found";
+			if (lib->entries.empty()) head = lib->folder + " - no WAV/AIFF files found";
 		}
-		else head = "press LOAD or drop a folder here";
+		else head = "press LOAD or drop folders here";
 		if (head.size() > 44) head = head.substr(0, 41) + "...";
 		text(vg, f, mm2px(1.5f), hy, 9.f, soft, NVG_ALIGN_LEFT | NVG_ALIGN_BASELINE, head);
 		text(vg, f, box.size.x - mm2px(1.5f), hy, 9.f, VOICE_COL[0], NVG_ALIGN_RIGHT | NVG_ALIGN_BASELINE, fixed ? "FIXED" : "AUTO");
@@ -587,7 +608,7 @@ struct StellaWidget : ModuleWidget {
 		// LOAD is read here on the UI thread, so the folder dialog never blocks audio
 		bool down = m->params[Stella::LOAD_PARAM].getValue() > 0.5f;
 		if (down && !loadWasDown) {
-			std::string dir = chooseFolder(m->folder);
+			std::string dir = chooseFolder(m->lastFolder());
 			if (!dir.empty()) m->loadFolder(dir);
 		}
 		loadWasDown = down;
@@ -596,9 +617,15 @@ struct StellaWidget : ModuleWidget {
 	void onPathDrop(const PathDropEvent& e) override {
 		Stella* m = dynamic_cast<Stella*>(module);
 		if (!m || e.paths.empty()) return;
-		std::string p = e.paths[0];
-		if (!system::isDirectory(p)) p = system::getDirectory(p);  // a file: use its folder
-		m->loadFolder(p);
+		// every folder dropped goes on the map; a dropped file brings its folder.
+		// Hold shift to add them to the folders already loaded.
+		std::vector<std::string> dirs;
+		for (std::string p : e.paths) {
+			if (!system::isDirectory(p)) p = system::getDirectory(p);
+			dirs.push_back(p);
+		}
+		if ((APP->window->getMods() & RACK_MOD_MASK) == GLFW_MOD_SHIFT) m->addFolders(dirs);
+		else m->loadFolders(dirs);
 		e.consume(this);
 	}
 
@@ -606,19 +633,36 @@ struct StellaWidget : ModuleWidget {
 		Stella* m = dynamic_cast<Stella*>(module);
 		if (!m) return;
 		menu->addChild(new MenuSeparator);
-		menu->addChild(createMenuLabel(m->folder.empty() ? "No folder loaded" : "Folder: " + m->folder));
-		menu->addChild(createMenuItem("Load folder...", "", [=]() {
-			std::string dir = chooseFolder(m->folder);
+		if (m->folders.empty()) menu->addChild(createMenuLabel("No folder loaded"));
+		for (const std::string& f : m->folders) menu->addChild(createMenuLabel("Folder: " + f));
+		menu->addChild(createMenuItem("Load folder (replace)...", "", [=]() {
+			std::string dir = chooseFolder(m->lastFolder());
 			if (!dir.empty()) m->loadFolder(dir);
 		}));
-		if (!m->folder.empty())
-			menu->addChild(createMenuItem("Re-scan folder", "", [=]() { m->loadFolder(m->folder); }));
+		menu->addChild(createMenuItem("Add folder...", "", [=]() {
+			std::string dir = chooseFolder(m->lastFolder());
+			if (!dir.empty()) m->addFolders({dir});
+		}));
+		if (m->folders.size() > 1) {
+			menu->addChild(createSubmenuItem("Remove folder", "", [=](Menu* sub) {
+				for (size_t i = 0; i < m->folders.size(); i++) {
+					std::string f = m->folders[i];
+					sub->addChild(createMenuItem(system::getFilename(f), "", [=]() {
+						std::vector<std::string> keep;
+						for (const std::string& g : m->folders) if (g != f) keep.push_back(g);
+						m->loadFolders(keep);
+					}));
+				}
+			}));
+		}
+		if (!m->folders.empty())
+			menu->addChild(createMenuItem("Re-scan folders", "", [=]() { m->reload(); }));
 		menu->addChild(createBoolMenuItem("Include subfolders", "",
 			[=]() { return m->subfolders; },
-			[=](bool b) { m->subfolders = b; if (!m->folder.empty()) m->loadFolder(m->folder); }));
+			[=](bool b) { m->subfolders = b; m->reload(); }));
 		menu->addChild(createBoolMenuItem("Even out sample levels", "",
 			[=]() { return m->normalise; },
-			[=](bool b) { m->normalise = b; if (!m->folder.empty()) m->loadFolder(m->folder); }));
+			[=](bool b) { m->normalise = b; m->reload(); }));
 	}
 };
 
