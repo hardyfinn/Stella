@@ -13,3 +13,7 @@ Right-click menu: load (replace) / add / remove / re-scan folders, include subfo
 
 Build: GitHub Actions builds a Mac (Apple Silicon) `.vcvplugin` on every push.
 Panel: `python3 res/make_panel.py`. Analysis test without Rack: `make test DIR=/path/to/samples`.
+
+## Licence
+
+MIT (see `LICENSE.txt`): you're free to use, change, port (VST/CLAP, other platforms, hardware) and share this code, as long as the copyright notice and licence text come along. Fonts on the panel (Inter, Climate Crisis) are under the SIL Open Font Licence.
